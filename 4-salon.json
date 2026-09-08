@@ -1,0 +1,20 @@
+{
+  "name": "The Barber Shop",
+  "timezone": "Asia/Jerusalem",
+  "slot_step_minutes": 30,
+  "opening_hours": {
+    "sunday":    ["09:00", "19:00"],
+    "monday":    ["09:00", "19:00"],
+    "tuesday":   ["09:00", "19:00"],
+    "wednesday": ["09:00", "19:00"],
+    "thursday":  ["09:00", "20:00"],
+    "friday":    ["08:00", "14:00"],
+    "saturday":  null
+  },
+  "services": [
+    { "id": "haircut",       "name": "Haircut",        "duration_minutes": 30, "price_ils": 60 },
+    { "id": "beard",         "name": "Beard trim",     "duration_minutes": 20, "price_ils": 40 },
+    { "id": "haircut_beard", "name": "Haircut + beard","duration_minutes": 45, "price_ils": 90 },
+    { "id": "kids",          "name": "Kids haircut",   "duration_minutes": 25, "price_ils": 50 }
+  ]
+}
