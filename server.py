@@ -1,7 +1,7 @@
 """Flask webhook for incoming WhatsApp messages.
 
 Works with both providers, detected automatically per request:
-- Twilio WhatsApp Sandbox (form-encoded POST to /webhook)
+- Twilio WhatsApp Sandbox (form-encoded POST to /webhook, TwiML reply)
 - Meta WhatsApp Cloud API (GET verification handshake + JSON POST to /webhook)
 
 GET  /        - health check
@@ -9,15 +9,18 @@ GET  /webhook - Meta verification handshake (uses META_VERIFY_TOKEN)
 POST /webhook - incoming WhatsApp messages (Twilio or Meta)
 """
 import os
-import threading
+from xml.sax.saxutils import escape as xml_escape
 
 from dotenv import load_dotenv
-from flask import Flask, request
+from flask import Flask, request, Response
+
+# Load .env BEFORE importing agent/whatsapp - those modules read
+# environment variables (API keys, DB path) at import time.
+load_dotenv()
 
 import agent
 import whatsapp
 
-load_dotenv()
 app = Flask(__name__)
 
 
@@ -37,24 +40,27 @@ def verify():
     return "forbidden", 403
 
 
-def _answer_and_send(sender, text):
-    try:
-        whatsapp.send_text(sender, agent.reply(sender, text))
-    except Exception as exc:
-        print(f"error handling message: {exc}")
-
-
 @app.post("/webhook")
 def incoming():
     if request.form.get("From", "").startswith("whatsapp:"):
         # Twilio webhook: application/x-www-form-urlencoded with From/Body.
-        # Answer in a background thread and return 200 immediately -
-        # Twilio resends the webhook if we take too long to respond.
+        # Reply SYNCHRONOUSLY with TwiML: the sandbox/trial rejects free-form
+        # REST API sends (error 21654, ContentSid required), while a TwiML
+        # <Message> in the webhook response needs no pre-approved template.
         sender = request.form["From"]  # looks like "whatsapp:+15551234567"
         text = request.form.get("Body", "").strip()
-        if text:
-            threading.Thread(target=_answer_and_send, args=(sender, text), daemon=True).start()
-        return "", 200
+        if not text:  # e.g. a media-only or status message - no reply needed
+            return Response("<Response></Response>", status=200, mimetype="text/xml")
+        try:
+            answer = agent.reply(sender, text)
+        except Exception as exc:
+            print(f"error handling message: {exc}")
+            answer = "Sorry, something went wrong. Please try again."
+        twiml = (
+            '<?xml version="1.0" encoding="UTF-8"?>'
+            f"<Response><Message>{xml_escape(answer)}</Message></Response>"
+        )
+        return Response(twiml, status=200, mimetype="text/xml")
 
     # Meta webhook: JSON body.
     data = request.get_json(silent=True) or {}
