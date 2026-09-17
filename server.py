@@ -8,11 +8,17 @@ GET  /        - health check
 GET  /webhook - Meta verification handshake (uses META_VERIFY_TOKEN)
 POST /webhook - incoming WhatsApp messages (Twilio or Meta)
 """
+import logging
 import os
 from xml.sax.saxutils import escape as xml_escape
 
 from dotenv import load_dotenv
 from flask import Flask, request, Response
+
+# Errors go to stderr with full tracebacks (same stream as Flask's access
+# lines, so they land in bot.log next to the requests that caused them).
+logging.basicConfig(level=logging.INFO,
+                    format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
 # Load .env BEFORE importing agent/whatsapp - those modules read
 # environment variables (API keys, DB path) at import time.
@@ -58,8 +64,8 @@ def incoming():
             return Response("<Response></Response>", status=200, mimetype="text/xml")
         try:
             answer = agent.reply(sender, text, business_id)
-        except Exception as exc:
-            print(f"error handling message: {exc}")
+        except Exception:
+            logging.exception("error handling Twilio message from %s", sender)
             answer = "Sorry, something went wrong. Please try again."
         twiml = (
             '<?xml version="1.0" encoding="UTF-8"?>'
@@ -86,8 +92,8 @@ def incoming():
                     text = message["text"]["body"]
                     answer = agent.reply(sender, text, business_id)
                     whatsapp.send_text(sender, answer, business_id)
-    except Exception as exc:  # never fail the webhook - Meta retries on non-200
-        print(f"error handling message: {exc}")
+    except Exception:  # never fail the webhook - Meta retries on non-200
+        logging.exception("error handling Meta webhook")
     return "ok", 200
 
 
