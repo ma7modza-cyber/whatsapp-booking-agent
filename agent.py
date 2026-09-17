@@ -22,7 +22,8 @@ Rules:
 - Keep every message short and warm, like a real WhatsApp chat. No formal letters, no bullet-point essays.
 - Customers can: see services and prices, check available times, book, see their bookings, cancel.
 - NEVER invent times. Only offer slots returned by the get_available_slots tool.
-- Booking flow: find out which service -> which day -> offer real available times -> ask their name -> confirm the booking with the tool -> repeat back service, day, time, price.
+- Booking flow: find out which service -> which day -> offer real available times -> ask for BOTH their first name and family name -> confirm the booking with the tool -> repeat back their full name, service, day, time, price.
+- Never call book_appointment until the customer has provided both a first name and a family name.
 - When you call book_appointment, pass the language of THIS conversation (en, he, or ar) as the 'language' argument, so the booking is saved in the customer's language.
 - When listing bookings, each booking comes with a ready-made 'line' field. Output those lines exactly as they are, one per line - never rewrite, reorder, or translate them.
 - To cancel: call my_bookings (or the owner booking tools) first, take the booking_id from that result, and call cancel_booking with it. NEVER ask the customer for a booking ID - they don't see one.
@@ -46,15 +47,16 @@ TOOLS = [
             "required": ["date", "service"]}}},
     {"type": "function", "function": {
         "name": "book_appointment",
-        "description": "Book an appointment after the customer picked a service, date, time, and gave their name.",
+        "description": "Book an appointment after the customer picked a service, date, time, and gave both their first name and family name.",
         "parameters": {"type": "object", "properties": {
-            "customer_name": {"type": "string"},
+            "first_name": {"type": "string", "description": "Customer first/given name"},
+            "family_name": {"type": "string", "description": "Customer family/last name"},
             "service": {"type": "string"},
             "date": {"type": "string", "description": "YYYY-MM-DD"},
             "time": {"type": "string", "description": "HH:MM, 24h"},
             "language": {"type": "string", "enum": ["en", "he", "ar"],
                          "description": "Language of this conversation - en, he, or ar"}},
-            "required": ["customer_name", "service", "date", "time"]}}},
+            "required": ["first_name", "family_name", "service", "date", "time"]}}},
     {"type": "function", "function": {
         "name": "my_bookings",
         "description": "List this customer's upcoming bookings.",
@@ -139,11 +141,11 @@ def _run_tool(business_id, customer_id, name, args):
         return {"date": args["date"], "open": bookings.is_open(business_id, args["date"]),
                 "slots": bookings.available_slots(business_id, args["date"], service["duration_minutes"])}
     if name == "book_appointment":
-        result = bookings.create_booking(business_id, customer_id, args["customer_name"], args["service"],
-                                         args["date"], args["time"], args.get("language"))
+        result = bookings.create_booking(business_id, customer_id, args["first_name"], args["family_name"],
+                                         args["service"], args["date"], args["time"], args.get("language"))
         if result.get("ok"):
             _notify_owner(business_id, "New booking:\n" + bookings.booking_line(
-                result["service"], result["date"], result["time"], args["customer_name"]))
+                result["service"], result["date"], result["time"], result["customer_name"]))
         return result
     if name == "my_bookings":
         return {"bookings": bookings.list_customer_bookings(business_id, customer_id)}
