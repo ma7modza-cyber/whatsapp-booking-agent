@@ -57,7 +57,21 @@ TOOLS = [
         "parameters": {"type": "object", "properties": {
             "booking_id": {"type": "integer"}},
             "required": ["booking_id"]}}},
+
 ]
+
+OWNER_TOOLS = [
+    {"type": "function", "function": {
+        "name": "owner_bookings_today",
+        "description": "For the salon owner only: list all confirmed bookings for today, with customer names, services, and times.",
+        "parameters": {"type": "object", "properties": {}}}},
+    {"type": "function", "function": {
+        "name": "owner_all_bookings",
+        "description": "For the salon owner only: list all confirmed bookings, with customer names, services, dates, and times.",
+        "parameters": {"type": "object", "properties": {}}}},
+]
+
+OWNER_NUMBERS = set(bookings.SALON.get("owner_whatsapp_numbers", []))
 
 _conversations = {}
 _post_booking = set()
@@ -102,16 +116,21 @@ def _run_tool(customer_id, name, args):
                                        args["date"], args["time"])
     if name == "my_bookings":
         return {"bookings": bookings.list_customer_bookings(customer_id)}
+    if name == "owner_bookings_today" and customer_id in OWNER_NUMBERS:
+        today = datetime.now(bookings.TZ).strftime("%Y-%m-%d")
+        return {"date": today, "bookings": bookings.list_bookings(today)}
+    if name == "owner_all_bookings" and customer_id in OWNER_NUMBERS:
+        return {"bookings": bookings.list_bookings()}
     if name == "cancel_booking":
         return bookings.cancel_booking(customer_id, int(args["booking_id"]))
     return {"error": f"Unknown tool {name}"}
 
 
-def _call_llm(messages):
+def _call_llm(messages, tools):
     resp = requests.post(
         f"{BASE_URL}/chat/completions",
         headers={"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"},
-        json={"model": MODEL, "messages": messages, "tools": TOOLS, "temperature": 0.4},
+        json={"model": MODEL, "messages": messages, "tools": tools, "temperature": 0.4},
         timeout=60,
     )
     resp.raise_for_status()
@@ -139,10 +158,15 @@ def reply(customer_id, text):
                           .replace("{now}", now.strftime("%H:%M"))
     history = _conversations.setdefault(customer_id, [])
     history.append({"role": "user", "content": text})
+    is_owner = customer_id in OWNER_NUMBERS
+    if is_owner:
+        system += ("\n- This sender is the salon owner. They may ask for today's bookings "
+                   "or all bookings; use the owner booking tools and include customer names.")
+    tools = TOOLS + OWNER_TOOLS if is_owner else TOOLS
     messages = [{"role": "system", "content": system}] + history[-20:]
 
     for _ in range(6):  # tool-call rounds
-        msg = _call_llm(messages)
+        msg = _call_llm(messages, tools)
         messages.append(msg)
         if not msg.get("tool_calls"):
             answer = msg.get("content") or "..."
