@@ -4,15 +4,14 @@ import os
 
 import requests
 from datetime import datetime
-from zoneinfo import ZoneInfo
-
 import bookings
+import businesses
 
 BASE_URL = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
 API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
 MODEL = os.environ.get("DEEPSEEK_MODEL", "deepseek-v4-pro")
 
-SYSTEM_PROMPT = """You are the WhatsApp receptionist for {salon_name}, a men's hair salon.
+SYSTEM_PROMPT = """You are the WhatsApp receptionist for {business_name}, a men's hair salon.
 
 Rules:
 - Reply in the SAME language the customer writes in: Hebrew, Arabic, or English.
@@ -24,7 +23,7 @@ Rules:
 - Today is {today} ({weekday}). Current salon time is {now}. All dates you pass to tools must be YYYY-MM-DD.
 - Prices are in shekels (ILS).
 - If someone asks something unrelated to the salon, answer briefly and steer back to booking.
-""".replace("{salon_name}", bookings.SALON["name"])
+"""
 
 TOOLS = [
     {"type": "function", "function": {
@@ -71,8 +70,6 @@ OWNER_TOOLS = [
         "parameters": {"type": "object", "properties": {}}}},
 ]
 
-OWNER_NUMBERS = set(bookings.SALON.get("owner_whatsapp_numbers", []))
-
 _conversations = {}
 _post_booking = set()
 
@@ -102,27 +99,32 @@ def _post_booking_reply(text):
     return "You're welcome! See you then 😊"
 
 
-def _run_tool(customer_id, name, args):
+def _run_tool(business_id, customer_id, name, args):
+    owner_numbers = {
+        businesses.normalize_number(n)
+        for n in businesses.get_business(business_id).get("owner_whatsapp_numbers", [])
+    }
+    normalized_customer_id = businesses.normalize_number(customer_id)
     if name == "get_services":
-        return {"services": bookings.list_services()}
+        return {"services": bookings.list_services(business_id)}
     if name == "get_available_slots":
-        service = bookings.get_service(args.get("service", ""))
+        service = bookings.get_service(business_id, args.get("service", ""))
         if not service:
             return {"error": "Unknown service. Call get_services first."}
-        return {"date": args["date"], "open": bookings.is_open(args["date"]),
-                "slots": bookings.available_slots(args["date"], service["duration_minutes"])}
+        return {"date": args["date"], "open": bookings.is_open(business_id, args["date"]),
+                "slots": bookings.available_slots(business_id, args["date"], service["duration_minutes"])}
     if name == "book_appointment":
-        return bookings.create_booking(customer_id, args["customer_name"], args["service"],
+        return bookings.create_booking(business_id, customer_id, args["customer_name"], args["service"],
                                        args["date"], args["time"])
     if name == "my_bookings":
-        return {"bookings": bookings.list_customer_bookings(customer_id)}
-    if name == "owner_bookings_today" and customer_id in OWNER_NUMBERS:
-        today = datetime.now(bookings.TZ).strftime("%Y-%m-%d")
-        return {"date": today, "bookings": bookings.list_bookings(today)}
-    if name == "owner_all_bookings" and customer_id in OWNER_NUMBERS:
-        return {"bookings": bookings.list_bookings()}
+        return {"bookings": bookings.list_customer_bookings(business_id, customer_id)}
+    if name == "owner_bookings_today" and normalized_customer_id in owner_numbers:
+        today = datetime.now(bookings.business_timezone(business_id)).strftime("%Y-%m-%d")
+        return {"date": today, "bookings": bookings.list_bookings(business_id, today)}
+    if name == "owner_all_bookings" and normalized_customer_id in owner_numbers:
+        return {"bookings": bookings.list_bookings(business_id)}
     if name == "cancel_booking":
-        return bookings.cancel_booking(customer_id, int(args["booking_id"]))
+        return bookings.cancel_booking(business_id, customer_id, int(args["booking_id"]))
     return {"error": f"Unknown tool {name}"}
 
 
@@ -137,13 +139,21 @@ def _call_llm(messages, tools):
     return resp.json()["choices"][0]["message"]
 
 
-def reply(customer_id, text):
+def reply(customer_id, text, business_id=None):
     """One customer message in, one receptionist reply out. Raises on API error."""
-    if customer_id in _post_booking:
-        _post_booking.discard(customer_id)
+    business_id = business_id or businesses.DEFAULT_BUSINESS_ID
+    config = businesses.get_business(business_id)
+    owner_numbers = {
+        businesses.normalize_number(n)
+        for n in config.get("owner_whatsapp_numbers", [])
+    }
+    normalized_customer_id = businesses.normalize_number(customer_id)
+    conversation_key = (business_id, customer_id)
+    if conversation_key in _post_booking:
+        _post_booking.discard(conversation_key)
         if not _looks_like_new_request(text):
             answer = _post_booking_reply(text)
-            _conversations.setdefault(customer_id, []).extend([
+            _conversations.setdefault(conversation_key, []).extend([
                 {"role": "user", "content": text},
                 {"role": "assistant", "content": answer},
             ])
@@ -152,13 +162,13 @@ def reply(customer_id, text):
     if not API_KEY:
         raise RuntimeError("DEEPSEEK_API_KEY is not set. Put it in your .env file.")
 
-    now = datetime.now(bookings.TZ)
-    system = SYSTEM_PROMPT.replace("{today}", now.strftime("%Y-%m-%d")) \
+    now = datetime.now(bookings.business_timezone(business_id))
+    system = SYSTEM_PROMPT.replace("{business_name}", config["name"]).replace("{today}", now.strftime("%Y-%m-%d")) \
                           .replace("{weekday}", now.strftime("%A")) \
                           .replace("{now}", now.strftime("%H:%M"))
-    history = _conversations.setdefault(customer_id, [])
+    history = _conversations.setdefault(conversation_key, [])
     history.append({"role": "user", "content": text})
-    is_owner = customer_id in OWNER_NUMBERS
+    is_owner = normalized_customer_id in owner_numbers
     if is_owner:
         system += ("\n- This sender is the salon owner. They may ask for today's bookings "
                    "or all bookings; use the owner booking tools and include customer names.")
@@ -178,9 +188,9 @@ def reply(customer_id, text):
                 args = json.loads(call["function"].get("arguments") or "{}")
             except json.JSONDecodeError:
                 args = {}
-            result = _run_tool(customer_id, name, args)
+            result = _run_tool(business_id, customer_id, name, args)
             if name == "book_appointment" and result.get("ok"):
-                _post_booking.add(customer_id)
+                _post_booking.add(conversation_key)
             messages.append({"role": "tool", "tool_call_id": call["id"],
                              "content": json.dumps(result, ensure_ascii=False)})
     return "Sorry, something got stuck on my side - can you say that again?"
