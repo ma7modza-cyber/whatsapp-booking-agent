@@ -225,11 +225,15 @@ def list_bookings(business_id, date_str=None):
 
 def cancel_booking(business_id, customer_id, booking_id):
     with _conn() as conn:
-        cur = conn.execute(
-            """UPDATE bookings SET status = 'cancelled'
+        row = conn.execute(
+            """SELECT customer_name, service_id, date, time, service_name FROM bookings
                WHERE id = ? AND business_id = ? AND customer_id = ? AND status = 'confirmed'""",
             (booking_id, business_id, customer_id),
-        )
-    if cur.rowcount == 0:
-        return {"ok": False, "error": "No such booking for this customer."}
-    return {"ok": True, "booking_id": booking_id}
+        ).fetchone()
+        if not row:
+            return {"ok": False, "error": "No such booking for this customer."}
+        conn.execute("UPDATE bookings SET status = 'cancelled' WHERE id = ?", (booking_id,))
+    customer_name, service_id, date_str, time_str, stored_name = row
+    display_name = _resolve_display_name(business_id, service_id, stored_name, customer_name)
+    return {"ok": True, "booking_id": booking_id, "customer_name": customer_name,
+            "service": display_name, "date": date_str, "time": time_str}
