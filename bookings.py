@@ -67,6 +67,8 @@ def _conn():
             business_id TEXT NOT NULL,
             customer_id TEXT NOT NULL,
             customer_name TEXT NOT NULL,
+            first_name TEXT,
+            family_name TEXT,
             service_id TEXT NOT NULL,
             date TEXT NOT NULL,
             time TEXT NOT NULL,
@@ -85,6 +87,10 @@ def _conn():
         )
     if "service_name" not in columns:
         conn.execute("ALTER TABLE bookings ADD COLUMN service_name TEXT")
+    if "first_name" not in columns:
+        conn.execute("ALTER TABLE bookings ADD COLUMN first_name TEXT")
+    if "family_name" not in columns:
+        conn.execute("ALTER TABLE bookings ADD COLUMN family_name TEXT")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_bookings_business_date "
         "ON bookings (business_id, date, status)"
@@ -158,7 +164,12 @@ def available_slots(business_id, date_str, duration_minutes):
     return slots
 
 
-def create_booking(business_id, customer_id, customer_name, service_id, date_str, time_str, language=None):
+def create_booking(business_id, customer_id, first_name, family_name, service_id, date_str, time_str, language=None):
+    first_name = first_name.strip()
+    family_name = family_name.strip()
+    if not first_name or not family_name:
+        return {"ok": False, "error": "Both first name and family name are required."}
+    customer_name = f"{first_name} {family_name}"
     service = get_service(business_id, service_id)
     if not service:
         return {"ok": False, "error": f"Unknown service '{service_id}'. Use get_services to list them."}
@@ -168,13 +179,14 @@ def create_booking(business_id, customer_id, customer_name, service_id, date_str
     with _conn() as conn:
         cur = conn.execute(
             """INSERT INTO bookings
-               (business_id, customer_id, customer_name, service_id, date, time, duration_minutes, service_name, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (business_id, customer_id, customer_name, service["id"], date_str, time_str,
+               (business_id, customer_id, customer_name, first_name, family_name, service_id, date, time, duration_minutes, service_name, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (business_id, customer_id, customer_name, first_name, family_name, service["id"], date_str, time_str,
              service["duration_minutes"], display_name,
              datetime.now(business_timezone(business_id)).isoformat(timespec="seconds")),
         )
-    return {"ok": True, "booking_id": cur.lastrowid, "service": display_name,
+    return {"ok": True, "booking_id": cur.lastrowid, "customer_name": customer_name,
+            "first_name": first_name, "family_name": family_name, "service": display_name,
             "date": date_str, "time": time_str, "price_ils": service["price_ils"]}
 
 
@@ -205,7 +217,7 @@ def list_customer_bookings(business_id, customer_id):
 
 
 def list_bookings(business_id, date_str=None):
-    query = """SELECT id, customer_name, service_id, date, time, service_name FROM bookings
+    query = """SELECT id, customer_name, first_name, family_name, service_id, date, time, service_name FROM bookings
                WHERE business_id = ? AND status = 'confirmed'"""
     params = [business_id]
     if date_str:
@@ -215,9 +227,13 @@ def list_bookings(business_id, date_str=None):
     with _conn() as conn:
         rows = conn.execute(query, params).fetchall()
     result = []
-    for booking_id, customer_name, service_id, booking_date, time_str, stored_name in rows:
+    for booking_id, customer_name, first_name, family_name, service_id, booking_date, time_str, stored_name in rows:
         display_name = _resolve_display_name(business_id, service_id, stored_name, customer_name)
-        result.append({"booking_id": booking_id, "customer_name": customer_name, "service": display_name,
+        if not first_name:
+            first_name, _, inferred_family_name = customer_name.partition(" ")
+            family_name = family_name or inferred_family_name
+        result.append({"booking_id": booking_id, "customer_name": customer_name,
+                       "first_name": first_name, "family_name": family_name, "service": display_name,
                        "date": booking_date, "time": time_str,
                        "line": booking_line(display_name, booking_date, time_str, customer_name)})
     return result
