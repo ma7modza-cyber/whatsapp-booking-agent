@@ -6,6 +6,7 @@ import requests
 from datetime import datetime
 import bookings
 import businesses
+import whatsapp
 
 BASE_URL = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
 API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
@@ -77,6 +78,18 @@ OWNER_TOOLS = [
 _conversations = {}
 _post_booking = set()
 
+
+def _notify_owner(business_id, text):
+    """WhatsApp the tenant's owner(s) about a booking event. Never breaks the
+    customer flow: on the Twilio trial/sandbox a send can fail (number not
+    joined to the sandbox or outside the 24h window), so errors are logged."""
+    config = businesses.get_business(business_id)
+    for number in config.get("owner_whatsapp_numbers", []):
+        try:
+            whatsapp.send_text(businesses.normalize_number(number), text, business_id)
+        except Exception as exc:
+            print(f"owner notification failed: {exc}")
+
 # A confirmed booking leaves the prior date/time in the conversation. Without this
 # guard, a short follow-up such as "thanks" can make the model try that slot again.
 _NEW_REQUEST_WORDS = (
@@ -118,8 +131,12 @@ def _run_tool(business_id, customer_id, name, args):
         return {"date": args["date"], "open": bookings.is_open(business_id, args["date"]),
                 "slots": bookings.available_slots(business_id, args["date"], service["duration_minutes"])}
     if name == "book_appointment":
-        return bookings.create_booking(business_id, customer_id, args["customer_name"], args["service"],
-                                       args["date"], args["time"], args.get("language"))
+        result = bookings.create_booking(business_id, customer_id, args["customer_name"], args["service"],
+                                         args["date"], args["time"], args.get("language"))
+        if result.get("ok"):
+            _notify_owner(business_id, "New booking:\n" + bookings.booking_line(
+                result["service"], result["date"], result["time"], args["customer_name"]))
+        return result
     if name == "my_bookings":
         return {"bookings": bookings.list_customer_bookings(business_id, customer_id)}
     if name == "owner_bookings_today" and normalized_customer_id in owner_numbers:
@@ -128,7 +145,11 @@ def _run_tool(business_id, customer_id, name, args):
     if name == "owner_all_bookings" and normalized_customer_id in owner_numbers:
         return {"bookings": bookings.list_bookings(business_id)}
     if name == "cancel_booking":
-        return bookings.cancel_booking(business_id, customer_id, int(args["booking_id"]))
+        result = bookings.cancel_booking(business_id, customer_id, int(args["booking_id"]))
+        if result.get("ok"):
+            _notify_owner(business_id, "Booking cancelled:\n" + bookings.booking_line(
+                result["service"], result["date"], result["time"], result["customer_name"]))
+        return result
     return {"error": f"Unknown tool {name}"}
 
 
