@@ -181,3 +181,16 @@ For Meta Cloud API tenants, add `"meta_phone_number_id": "..."`. For asynchronou
   "model not found" error, try `deepseek-chat`.
 - The Meta Cloud API path still works: leave the `TWILIO_...` values empty and
   fill in the `META_...` ones instead.
+
+## Production security
+
+- Set `PUBLIC_BASE_URL` to the exact public HTTPS origin Twilio calls, for example
+  `https://mahmoods-macbook-pro.tail9058ef.ts.net`. Requests with an invalid
+  Twilio signature are rejected.
+- If using Meta Cloud API, set `META_APP_SECRET` to the app secret. Unsigned or
+  incorrectly signed Meta webhook requests are rejected.
+- The server binds to `127.0.0.1`; expose it only through the HTTPS tunnel.
+- `RATE_LIMIT_PER_MINUTE` defaults to 30 messages per sender and
+  `MAX_WEBHOOK_BYTES` defaults to 65536 bytes.
+- Run behind a production WSGI server before serving real businesses. Flask's
+  built-in server is suitable for the current prototype, not production load.
