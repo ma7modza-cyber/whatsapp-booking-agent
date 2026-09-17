@@ -60,6 +60,32 @@ TOOLS = [
 ]
 
 _conversations = {}
+_post_booking = set()
+
+# A confirmed booking leaves the prior date/time in the conversation. Without this
+# guard, a short follow-up such as "thanks" can make the model try that slot again.
+_NEW_REQUEST_WORDS = (
+    "book", "booking", "appointment", "available", "availability", "slot",
+    "time", "service", "price", "cost", "cancel", "change", "move", "another",
+    "tomorrow", "today", "sunday", "monday", "tuesday", "wednesday",
+    "thursday", "friday", "saturday",
+    "לקבוע", "תור", "פנוי", "זמין", "שעה", "שירות", "מחיר", "לבטל", "לשנות",
+    "حجز", "موعد", "متاح", "فاضي", "ساعة", "وقت", "خدمة", "سعر", "إلغاء", "تغيير",
+)
+
+
+def _looks_like_new_request(text):
+    lowered = text.casefold()
+    return any(word in lowered for word in _NEW_REQUEST_WORDS)
+
+
+def _post_booking_reply(text):
+    """Return a brief acknowledgement in the customer's language."""
+    if any("\u0590" <= ch <= "\u05ff" for ch in text):
+        return "בשמחה! נתראה 😊"
+    if any("\u0600" <= ch <= "\u06ff" for ch in text):
+        return "العفو! بنشوفك قريب 😊"
+    return "You're welcome! See you then 😊"
 
 
 def _run_tool(customer_id, name, args):
@@ -94,6 +120,16 @@ def _call_llm(messages):
 
 def reply(customer_id, text):
     """One customer message in, one receptionist reply out. Raises on API error."""
+    if customer_id in _post_booking:
+        _post_booking.discard(customer_id)
+        if not _looks_like_new_request(text):
+            answer = _post_booking_reply(text)
+            _conversations.setdefault(customer_id, []).extend([
+                {"role": "user", "content": text},
+                {"role": "assistant", "content": answer},
+            ])
+            return answer
+
     if not API_KEY:
         raise RuntimeError("DEEPSEEK_API_KEY is not set. Put it in your .env file.")
 
@@ -119,6 +155,8 @@ def reply(customer_id, text):
             except json.JSONDecodeError:
                 args = {}
             result = _run_tool(customer_id, name, args)
+            if name == "book_appointment" and result.get("ok"):
+                _post_booking.add(customer_id)
             messages.append({"role": "tool", "tool_call_id": call["id"],
                              "content": json.dumps(result, ensure_ascii=False)})
     return "Sorry, something got stuck on my side - can you say that again?"
