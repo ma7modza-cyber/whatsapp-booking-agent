@@ -62,11 +62,16 @@ def incoming():
         text = request.form.get("Body", "").strip()
         if not text:  # e.g. a media-only or status message - no reply needed
             return Response("<Response></Response>", status=200, mimetype="text/xml")
+        logging.info("Twilio inbound sender=%s business=%s text_length=%d", sender, business_id, len(text))
         try:
             answer = agent.reply(sender, text, business_id)
         except Exception:
             logging.exception("error handling Twilio message from %s", sender)
             answer = "Sorry, something went wrong. Please try again."
+        if not isinstance(answer, str) or not answer.strip():
+            logging.error("empty Twilio reply sender=%s business=%s answer=%r", sender, business_id, answer)
+            answer = "Sorry, something went wrong. Please try again."
+        logging.info("Twilio outbound sender=%s business=%s answer_length=%d", sender, business_id, len(answer))
         twiml = (
             '<?xml version="1.0" encoding="UTF-8"?>'
             f"<Response><Message>{xml_escape(answer)}</Message></Response>"
