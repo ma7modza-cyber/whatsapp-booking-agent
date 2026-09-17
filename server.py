@@ -1,34 +1,36 @@
-"""Flask webhook for incoming WhatsApp messages.
-
-Works with both providers, detected automatically per request:
-- Twilio WhatsApp Sandbox (form-encoded POST to /webhook, TwiML reply)
-- Meta WhatsApp Cloud API (GET verification handshake + JSON POST to /webhook)
-
-GET  /        - health check
-GET  /webhook - Meta verification handshake (uses META_VERIFY_TOKEN)
-POST /webhook - incoming WhatsApp messages (Twilio or Meta)
-"""
+"""Flask webhook for Twilio and Meta WhatsApp messages."""
 import logging
 import os
 from xml.sax.saxutils import escape as xml_escape
 
 from dotenv import load_dotenv
-from flask import Flask, request, Response
+from flask import Flask, Response, request
 
-# Errors go to stderr with full tracebacks (same stream as Flask's access
-# lines, so they land in bot.log next to the requests that caused them).
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-
-# Load .env BEFORE importing agent/whatsapp - those modules read
-# environment variables (API keys, DB path) at import time.
+logger = logging.getLogger(__name__)
 load_dotenv()
 
 import agent
 import businesses
+import security
 import whatsapp
 
 app = Flask(__name__)
+app.config["MAX_CONTENT_LENGTH"] = int(os.environ.get("MAX_WEBHOOK_BYTES", "65536"))
+_limiter = security.RateLimiter(
+    limit=int(os.environ.get("RATE_LIMIT_PER_MINUTE", "30")), window_seconds=60
+)
+_EMPTY_TWIML = "<Response></Response>"
+_ERROR_REPLY = "Sorry, something went wrong. Please try again."
+
+
+def _twiml(message=None):
+    body = _EMPTY_TWIML if message is None else (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        f"<Response><Message>{xml_escape(message)}</Message></Response>"
+    )
+    return Response(body, status=200, mimetype="text/xml")
 
 
 @app.get("/")
@@ -38,47 +40,47 @@ def health():
 
 @app.get("/webhook")
 def verify():
-    # Meta's verification handshake. Twilio never calls GET.
     mode = request.args.get("hub.mode")
     token = request.args.get("hub.verify_token")
     challenge = request.args.get("hub.challenge")
-    if mode == "subscribe" and token == os.environ.get("META_VERIFY_TOKEN", ""):
-        return challenge, 200
+    expected = os.environ.get("META_VERIFY_TOKEN")
+    if expected and mode == "subscribe" and token and security.hmac.compare_digest(token, expected):
+        return challenge or "", 200
     return "forbidden", 403
 
 
-@app.post("/webhook")
-def incoming():
-    if request.form.get("From", "").startswith("whatsapp:"):
-        # Twilio webhook: application/x-www-form-urlencoded with From/Body.
-        # Reply SYNCHRONOUSLY with TwiML: the sandbox/trial rejects free-form
-        # REST API sends (error 21654, ContentSid required), while a TwiML
-        # <Message> in the webhook response needs no pre-approved template.
-        sender = request.form["From"]  # looks like "whatsapp:+15551234567"
-        business_id = businesses.resolve_twilio_number(request.form.get("To", ""))
-        if not business_id:
-            print(f"unknown Twilio destination: {request.form.get('To', '')}")
-            return Response("<Response></Response>", status=200, mimetype="text/xml")
-        text = request.form.get("Body", "").strip()
-        if not text:  # e.g. a media-only or status message - no reply needed
-            return Response("<Response></Response>", status=200, mimetype="text/xml")
-        logging.info("Twilio inbound sender=%s business=%s text_length=%d", sender, business_id, len(text))
-        try:
-            answer = agent.reply(sender, text, business_id)
-        except Exception:
-            logging.exception("error handling Twilio message from %s", sender)
-            answer = "Sorry, something went wrong. Please try again."
-        if not isinstance(answer, str) or not answer.strip():
-            logging.error("empty Twilio reply sender=%s business=%s answer=%r", sender, business_id, answer)
-            answer = "Sorry, something went wrong. Please try again."
-        logging.info("Twilio outbound sender=%s business=%s answer_length=%d", sender, business_id, len(answer))
-        twiml = (
-            '<?xml version="1.0" encoding="UTF-8"?>'
-            f"<Response><Message>{xml_escape(answer)}</Message></Response>"
-        )
-        return Response(twiml, status=200, mimetype="text/xml")
+def _handle_twilio():
+    if not security.valid_twilio_request(request):
+        logger.warning("rejected invalid Twilio signature")
+        return Response("forbidden", status=403)
+    sender = request.form.get("From", "")
+    business_id = businesses.resolve_twilio_number(request.form.get("To", ""))
+    if not business_id:
+        logger.warning("unknown Twilio destination")
+        return _twiml()
+    if not _limiter.allow(("twilio", sender)):
+        logger.warning("Twilio rate limit sender=%s business=%s", sender, business_id)
+        return _twiml(_ERROR_REPLY)
+    text = request.form.get("Body", "").strip()
+    if not text:
+        return _twiml()
+    logger.info("Twilio inbound sender=%s business=%s text_length=%d", sender, business_id, len(text))
+    try:
+        answer = agent.reply(sender, text, business_id)
+    except Exception:
+        logger.exception("error handling Twilio message sender=%s business=%s", sender, business_id)
+        answer = _ERROR_REPLY
+    if not isinstance(answer, str) or not answer.strip():
+        logger.error("empty Twilio reply sender=%s business=%s", sender, business_id)
+        answer = _ERROR_REPLY
+    logger.info("Twilio outbound sender=%s business=%s answer_length=%d", sender, business_id, len(answer))
+    return _twiml(answer)
 
-    # Meta webhook: JSON body.
+
+def _handle_meta():
+    if not security.valid_meta_request(request):
+        logger.warning("rejected invalid Meta signature")
+        return Response("forbidden", status=403)
     data = request.get_json(silent=True) or {}
     try:
         for entry in data.get("entry", []):
@@ -88,19 +90,28 @@ def incoming():
                     value.get("metadata", {}).get("phone_number_id")
                 )
                 if not business_id:
-                    print("unknown Meta phone_number_id")
+                    logger.warning("unknown Meta phone_number_id")
                     continue
                 for message in value.get("messages", []):
                     if message.get("type") != "text":
                         continue
-                    sender = message["from"]
-                    text = message["text"]["body"]
-                    answer = agent.reply(sender, text, business_id)
+                    sender = message.get("from", "")
+                    if not sender or not _limiter.allow(("meta", sender)):
+                        logger.warning("Meta rate limit or missing sender business=%s", business_id)
+                        continue
+                    answer = agent.reply(sender, message.get("text", {}).get("body", ""), business_id)
                     whatsapp.send_text(sender, answer, business_id)
-    except Exception:  # never fail the webhook - Meta retries on non-200
-        logging.exception("error handling Meta webhook")
+    except Exception:
+        logger.exception("error handling Meta webhook")
     return "ok", 200
 
 
+@app.post("/webhook")
+def incoming():
+    if request.form.get("From", "").startswith("whatsapp:"):
+        return _handle_twilio()
+    return _handle_meta()
+
+
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "5000")), threaded=True)
+    app.run(host="127.0.0.1", port=int(os.environ.get("PORT", "5000")), threaded=True)
