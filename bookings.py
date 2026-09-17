@@ -128,6 +128,29 @@ def list_customer_bookings(customer_id):
     return result
 
 
+def list_bookings(date_str=None):
+    """List confirmed bookings for the owner, optionally limited to one date."""
+    query = """SELECT customer_name, service_id, date, time FROM bookings
+               WHERE status = 'confirmed'"""
+    params = []
+    if date_str:
+        query += " AND date = ?"
+        params.append(date_str)
+    query += " ORDER BY date, time"
+    with _conn() as conn:
+        rows = conn.execute(query, params).fetchall()
+    result = []
+    for customer_name, service_id, booking_date, time_str in rows:
+        service = get_service(service_id)
+        result.append({
+            "customer_name": customer_name,
+            "service": service["name"] if service else service_id,
+            "date": booking_date,
+            "time": time_str,
+        })
+    return result
+
+
 def cancel_booking(customer_id, booking_id):
     with _conn() as conn:
         cur = conn.execute(
