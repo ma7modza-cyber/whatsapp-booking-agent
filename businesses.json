@@ -17,10 +17,10 @@
         "saturday": null
       },
       "services": [
-        {"id": "haircut", "name": "Haircut", "duration_minutes": 30, "price_ils": 60},
-        {"id": "beard", "name": "Beard trim", "duration_minutes": 20, "price_ils": 40},
-        {"id": "haircut_beard", "name": "Haircut + beard", "duration_minutes": 45, "price_ils": 90},
-        {"id": "kids", "name": "Kids haircut", "duration_minutes": 25, "price_ils": 50}
+        {"id": "haircut", "name": "Haircut", "duration_minutes": 30, "price_ils": 60, "names": {"en": "Haircut", "he": "תספורת", "ar": "حلاقة شعر"}},
+        {"id": "beard", "name": "Beard trim", "duration_minutes": 20, "price_ils": 40, "names": {"en": "Beard trim", "he": "עיצוב זקן", "ar": "تهذيب اللحية"}},
+        {"id": "haircut_beard", "name": "Haircut + beard", "duration_minutes": 45, "price_ils": 90, "names": {"en": "Haircut + beard", "he": "תספורת + עיצוב זקן", "ar": "حلاقة شعر + لحية"}},
+        {"id": "kids", "name": "Kids haircut", "duration_minutes": 25, "price_ils": 50, "names": {"en": "Kids haircut", "he": "תספורת ילדים", "ar": "حلاقة أطفال"}}
       ]
     }
   }
