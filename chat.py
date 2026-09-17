@@ -26,7 +26,7 @@ def main():
         if text.lower() in ("quit", "exit"):
             break
         if text.lower() == "reset":
-            agent._conversations.pop(ME, None)
+            agent._conversations.pop((agent.businesses.DEFAULT_BUSINESS_ID, ME), None)
             print("(conversation reset)\n")
             continue
         try:
