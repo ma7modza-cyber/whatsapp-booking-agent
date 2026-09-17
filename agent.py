@@ -1,17 +1,16 @@
 """The AI receptionist: DeepSeek chat + tool calling. Used by both the CLI and the WhatsApp server."""
 import json
-import os
-
 import logging
+import os
 import threading
-
-logger = logging.getLogger(__name__)
+from datetime import datetime
 
 import requests
-from datetime import datetime
 import bookings
 import businesses
 import whatsapp
+
+logger = logging.getLogger(__name__)
 
 BASE_URL = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
 API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
@@ -85,6 +84,9 @@ OWNER_TOOLS = [
 
 _conversations = {}
 _post_booking = set()
+_state_lock = threading.RLock()
+_MAX_HISTORY_MESSAGES = 20
+_REPLY_LOCKS = tuple(threading.RLock() for _ in range(64))
 
 
 def _notify_owner(business_id, text):
@@ -180,7 +182,7 @@ def _call_llm(messages, tools):
     return resp.json()["choices"][0]["message"]
 
 
-def reply(customer_id, text, business_id=None):
+def _reply_unlocked(customer_id, text, business_id=None):
     """One customer message in, one receptionist reply out. Raises on API error."""
     business_id = business_id or businesses.DEFAULT_BUSINESS_ID
     logger.info("reply start business=%s customer=%s text_length=%d", business_id, customer_id, len(text))
@@ -191,14 +193,17 @@ def reply(customer_id, text, business_id=None):
     }
     normalized_customer_id = businesses.normalize_number(customer_id)
     conversation_key = (business_id, customer_id)
-    if conversation_key in _post_booking:
+    with _state_lock:
+        was_post_booking = conversation_key in _post_booking
         _post_booking.discard(conversation_key)
-        if not _looks_like_new_request(text):
+        if was_post_booking and not _looks_like_new_request(text):
             answer = _post_booking_reply(text)
-            _conversations.setdefault(conversation_key, []).extend([
+            history = _conversations.setdefault(conversation_key, [])
+            history.extend([
                 {"role": "user", "content": text},
                 {"role": "assistant", "content": answer},
             ])
+            del history[:-_MAX_HISTORY_MESSAGES]
             return answer
 
     if not API_KEY:
@@ -208,14 +213,17 @@ def reply(customer_id, text, business_id=None):
     system = SYSTEM_PROMPT.replace("{business_name}", config["name"]).replace("{today}", now.strftime("%Y-%m-%d")) \
                           .replace("{weekday}", now.strftime("%A")) \
                           .replace("{now}", now.strftime("%H:%M"))
-    history = _conversations.setdefault(conversation_key, [])
-    history.append({"role": "user", "content": text})
+    with _state_lock:
+        history = _conversations.setdefault(conversation_key, [])
+        history.append({"role": "user", "content": text})
+        del history[:-_MAX_HISTORY_MESSAGES]
+        history_snapshot = list(history)
     is_owner = normalized_customer_id in owner_numbers
     if is_owner:
         system += ("\n- This sender is the salon owner. They may ask for today's bookings "
                    "or all bookings; use the owner booking tools and include customer names.")
     tools = TOOLS + OWNER_TOOLS if is_owner else TOOLS
-    messages = [{"role": "system", "content": system}] + history[-20:]
+    messages = [{"role": "system", "content": system}] + history_snapshot
 
     for round_number in range(1, 7):  # tool-call rounds
         msg = _call_llm(messages, tools)
@@ -229,7 +237,9 @@ def reply(customer_id, text, business_id=None):
                 logger.error("empty assistant reply customer=%s round=%d message=%r",
                              customer_id, round_number, msg)
                 answer = "Sorry, something got stuck on my side - can you say that again?"
-            history.append({"role": "assistant", "content": answer})
+            with _state_lock:
+                history.append({"role": "assistant", "content": answer})
+                del history[:-_MAX_HISTORY_MESSAGES]
             logger.info("reply ready customer=%s answer_length=%d", customer_id, len(answer))
             return answer
         for call in tool_calls:
@@ -240,19 +250,27 @@ def reply(customer_id, text, business_id=None):
                 if not isinstance(args, dict):
                     raise ValueError("tool arguments must be a JSON object")
             except (json.JSONDecodeError, ValueError) as exc:
-                logger.warning("invalid tool arguments customer=%s tool=%s error=%s raw=%r",
-                               customer_id, name, exc, function.get("arguments"))
+                logger.warning("invalid tool arguments customer=%s tool=%s error=%s",
+                               customer_id, name, exc)
                 args = {}
             try:
                 result = _run_tool(business_id, customer_id, name, args)
             except Exception:
-                logger.exception("tool failed customer=%s tool=%s args=%r", customer_id, name, args)
+                logger.exception("tool failed customer=%s tool=%s", customer_id, name)
                 result = {"ok": False, "error": "The booking tool failed. Ask the customer to try again."}
             logger.info("tool result customer=%s tool=%s ok=%s error=%s",
                         customer_id, name, result.get("ok"), result.get("error"))
             if name == "book_appointment" and result.get("ok"):
-                _post_booking.add(conversation_key)
+                with _state_lock:
+                    _post_booking.add(conversation_key)
             messages.append({"role": "tool", "tool_call_id": call.get("id", ""),
                              "content": json.dumps(result, ensure_ascii=False)})
     logger.error("tool round limit reached customer=%s", customer_id)
     return "Sorry, something got stuck on my side - can you say that again?"
+
+
+def reply(customer_id, text, business_id=None):
+    """Serialize each customer conversation while allowing unrelated chats in parallel."""
+    lock = _REPLY_LOCKS[hash((business_id, customer_id)) % len(_REPLY_LOCKS)]
+    with lock:
+        return _reply_unlocked(customer_id, text, business_id)
