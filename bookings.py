@@ -205,7 +205,7 @@ def list_customer_bookings(business_id, customer_id):
 
 
 def list_bookings(business_id, date_str=None):
-    query = """SELECT customer_name, service_id, date, time, service_name FROM bookings
+    query = """SELECT id, customer_name, service_id, date, time, service_name FROM bookings
                WHERE business_id = ? AND status = 'confirmed'"""
     params = [business_id]
     if date_str:
@@ -215,9 +215,9 @@ def list_bookings(business_id, date_str=None):
     with _conn() as conn:
         rows = conn.execute(query, params).fetchall()
     result = []
-    for customer_name, service_id, booking_date, time_str, stored_name in rows:
+    for booking_id, customer_name, service_id, booking_date, time_str, stored_name in rows:
         display_name = _resolve_display_name(business_id, service_id, stored_name, customer_name)
-        result.append({"customer_name": customer_name, "service": display_name,
+        result.append({"booking_id": booking_id, "customer_name": customer_name, "service": display_name,
                        "date": booking_date, "time": time_str,
                        "line": booking_line(display_name, booking_date, time_str, customer_name)})
     return result
