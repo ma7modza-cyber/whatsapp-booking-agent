@@ -2,8 +2,7 @@
 
 An AI receptionist that lives on a business's WhatsApp number. Customers message
 it in Hebrew, Arabic, or English; it answers questions, shows prices, and books
-appointments into a real calendar of available slots. First use case: a men's
-hair salon, but the salon details are just one editable file (`salon.json`).
+appointments into a real calendar of available slots. One running bot can serve many businesses. Incoming messages are routed by the WhatsApp number they arrived on, with isolated configuration and bookings for each business.
 
 Built with: Python + Flask (webhook), DeepSeek (the AI brain), SQLite (bookings),
 Twilio WhatsApp Sandbox (the phone number - no Meta business account needed).
@@ -139,9 +138,27 @@ WhatsApp any message to the sandbox number - the agent answers. You're live.
 
 ## Make it yours
 
-Everything about the business is in `salon.json` - the name, opening hours per
-weekday, services, durations, and prices. Edit it with `nano salon.json` and
-restart the server. No code changes needed.
+Everything about every business is in `businesses.json`: its name, inbound WhatsApp number(s), owner number(s), opening hours, services, durations, and prices. Add another entry under `businesses`, give it a unique ID, then restart the server. No code changes are needed.
+
+The original sandbox remains the default `barber-shop` tenant and still routes `whatsapp:+14155238886` to the same salon. Existing rows in `bookings.db` are automatically assigned to this default tenant the first time the updated app runs.
+
+Example tenant fields:
+
+```json
+"new-salon": {
+  "name": "New Salon",
+  "timezone": "Asia/Jerusalem",
+  "slot_step_minutes": 30,
+  "inbound_whatsapp_numbers": ["whatsapp:+15551234567"],
+  "owner_whatsapp_numbers": ["whatsapp:+972501234567"],
+  "opening_hours": { "sunday": ["09:00", "18:00"] },
+  "services": [
+    {"id": "haircut", "name": "Haircut", "duration_minutes": 30, "price_ils": 60}
+  ]
+}
+```
+
+For Meta Cloud API tenants, add `"meta_phone_number_id": "..."`. For asynchronous Twilio sends from a tenant-specific sender, add `"twilio_whatsapp_from": "whatsapp:+..."`.
 
 ## Files
 
@@ -152,7 +169,8 @@ restart the server. No code changes needed.
 | `agent.py` | The AI brain: DeepSeek + booking tools |
 | `bookings.py` | Slot math and the SQLite bookings database |
 | `whatsapp.py` | Sends replies - Twilio if configured, Meta otherwise |
-| `salon.json` | The business: name, hours, services, prices |
+| `businesses.json` | All businesses: routing numbers, owners, hours, services, prices |
+| `businesses.py` | Loads tenant config and resolves inbound numbers |
 | `.env` | Your secrets (never committed to git) |
 
 ## Notes
