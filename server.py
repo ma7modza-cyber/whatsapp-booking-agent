@@ -19,6 +19,7 @@ from flask import Flask, request, Response
 load_dotenv()
 
 import agent
+import businesses
 import whatsapp
 
 app = Flask(__name__)
@@ -48,11 +49,15 @@ def incoming():
         # REST API sends (error 21654, ContentSid required), while a TwiML
         # <Message> in the webhook response needs no pre-approved template.
         sender = request.form["From"]  # looks like "whatsapp:+15551234567"
+        business_id = businesses.resolve_twilio_number(request.form.get("To", ""))
+        if not business_id:
+            print(f"unknown Twilio destination: {request.form.get('To', '')}")
+            return Response("<Response></Response>", status=200, mimetype="text/xml")
         text = request.form.get("Body", "").strip()
         if not text:  # e.g. a media-only or status message - no reply needed
             return Response("<Response></Response>", status=200, mimetype="text/xml")
         try:
-            answer = agent.reply(sender, text)
+            answer = agent.reply(sender, text, business_id)
         except Exception as exc:
             print(f"error handling message: {exc}")
             answer = "Sorry, something went wrong. Please try again."
@@ -68,13 +73,19 @@ def incoming():
         for entry in data.get("entry", []):
             for change in entry.get("changes", []):
                 value = change.get("value", {})
+                business_id = businesses.resolve_meta_phone_number_id(
+                    value.get("metadata", {}).get("phone_number_id")
+                )
+                if not business_id:
+                    print("unknown Meta phone_number_id")
+                    continue
                 for message in value.get("messages", []):
                     if message.get("type") != "text":
                         continue
                     sender = message["from"]
                     text = message["text"]["body"]
-                    answer = agent.reply(sender, text)
-                    whatsapp.send_text(sender, answer)
+                    answer = agent.reply(sender, text, business_id)
+                    whatsapp.send_text(sender, answer, business_id)
     except Exception as exc:  # never fail the webhook - Meta retries on non-200
         print(f"error handling message: {exc}")
     return "ok", 200
