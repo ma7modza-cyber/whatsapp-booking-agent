@@ -19,6 +19,8 @@ Rules:
 - Customers can: see services and prices, check available times, book, see their bookings, cancel.
 - NEVER invent times. Only offer slots returned by the get_available_slots tool.
 - Booking flow: find out which service -> which day -> offer real available times -> ask their name -> confirm the booking with the tool -> repeat back service, day, time, price.
+- When you call book_appointment, pass the language of THIS conversation (en, he, or ar) as the 'language' argument, so the booking is saved in the customer's language.
+- When listing bookings, each booking comes with a ready-made 'line' field. Output those lines exactly as they are, one per line - never rewrite, reorder, or translate them.
 - If the day they want is closed, say so and suggest the next open day.
 - Today is {today} ({weekday}). Current salon time is {now}. All dates you pass to tools must be YYYY-MM-DD.
 - Prices are in shekels (ILS).
@@ -44,7 +46,9 @@ TOOLS = [
             "customer_name": {"type": "string"},
             "service": {"type": "string"},
             "date": {"type": "string", "description": "YYYY-MM-DD"},
-            "time": {"type": "string", "description": "HH:MM, 24h"}},
+            "time": {"type": "string", "description": "HH:MM, 24h"},
+            "language": {"type": "string", "enum": ["en", "he", "ar"],
+                         "description": "Language of this conversation - en, he, or ar"}},
             "required": ["customer_name", "service", "date", "time"]}}},
     {"type": "function", "function": {
         "name": "my_bookings",
@@ -115,7 +119,7 @@ def _run_tool(business_id, customer_id, name, args):
                 "slots": bookings.available_slots(business_id, args["date"], service["duration_minutes"])}
     if name == "book_appointment":
         return bookings.create_booking(business_id, customer_id, args["customer_name"], args["service"],
-                                       args["date"], args["time"])
+                                       args["date"], args["time"], args.get("language"))
     if name == "my_bookings":
         return {"bookings": bookings.list_customer_bookings(business_id, customer_id)}
     if name == "owner_bookings_today" and normalized_customer_id in owner_numbers:
