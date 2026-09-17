@@ -2,6 +2,9 @@
 import json
 import os
 
+import logging
+import threading
+
 import requests
 from datetime import datetime
 import bookings
@@ -80,15 +83,19 @@ _post_booking = set()
 
 
 def _notify_owner(business_id, text):
-    """WhatsApp the tenant's owner(s) about a booking event. Never breaks the
-    customer flow: on the Twilio trial/sandbox a send can fail (number not
-    joined to the sandbox or outside the 24h window), so errors are logged."""
-    config = businesses.get_business(business_id)
-    for number in config.get("owner_whatsapp_numbers", []):
-        try:
-            whatsapp.send_text(businesses.normalize_number(number), text, business_id)
-        except Exception as exc:
-            print(f"owner notification failed: {exc}")
+    """WhatsApp the tenant's owner(s) about a booking event.
+
+    Runs on a daemon thread: the send is a blocking Twilio/Meta REST call and
+    the Twilio webhook budget is ~15s, so a slow or rejected send must never
+    delay or break the customer reply. Errors are logged, never raised."""
+    def _send():
+        config = businesses.get_business(business_id)
+        for number in config.get("owner_whatsapp_numbers", []):
+            try:
+                whatsapp.send_text(businesses.normalize_number(number), text, business_id)
+            except Exception:
+                logging.exception("owner notification failed")
+    threading.Thread(target=_send, daemon=True).start()
 
 # A confirmed booking leaves the prior date/time in the conversation. Without this
 # guard, a short follow-up such as "thanks" can make the model try that slot again.
