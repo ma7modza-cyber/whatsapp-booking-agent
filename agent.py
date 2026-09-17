@@ -5,6 +5,8 @@ import os
 import logging
 import threading
 
+logger = logging.getLogger(__name__)
+
 import requests
 from datetime import datetime
 import bookings
@@ -141,6 +143,10 @@ def _run_tool(business_id, customer_id, name, args):
         return {"date": args["date"], "open": bookings.is_open(business_id, args["date"]),
                 "slots": bookings.available_slots(business_id, args["date"], service["duration_minutes"])}
     if name == "book_appointment":
+        required = ("first_name", "family_name", "service", "date", "time")
+        missing = [field for field in required if not str(args.get(field, "")).strip()]
+        if missing:
+            return {"ok": False, "error": "Missing required booking details: " + ", ".join(missing)}
         result = bookings.create_booking(business_id, customer_id, args["first_name"], args["family_name"],
                                          args["service"], args["date"], args["time"], args.get("language"))
         if result.get("ok"):
@@ -177,6 +183,7 @@ def _call_llm(messages, tools):
 def reply(customer_id, text, business_id=None):
     """One customer message in, one receptionist reply out. Raises on API error."""
     business_id = business_id or businesses.DEFAULT_BUSINESS_ID
+    logger.info("reply start business=%s customer=%s text_length=%d", business_id, customer_id, len(text))
     config = businesses.get_business(business_id)
     owner_numbers = {
         businesses.normalize_number(n)
@@ -210,22 +217,42 @@ def reply(customer_id, text, business_id=None):
     tools = TOOLS + OWNER_TOOLS if is_owner else TOOLS
     messages = [{"role": "system", "content": system}] + history[-20:]
 
-    for _ in range(6):  # tool-call rounds
+    for round_number in range(1, 7):  # tool-call rounds
         msg = _call_llm(messages, tools)
         messages.append(msg)
-        if not msg.get("tool_calls"):
-            answer = msg.get("content") or "..."
+        tool_calls = msg.get("tool_calls") or []
+        logger.info("llm round=%d customer=%s tool_calls=%d content_length=%d",
+                    round_number, customer_id, len(tool_calls), len(msg.get("content") or ""))
+        if not tool_calls:
+            answer = msg.get("content")
+            if not isinstance(answer, str) or not answer.strip():
+                logger.error("empty assistant reply customer=%s round=%d message=%r",
+                             customer_id, round_number, msg)
+                answer = "Sorry, something got stuck on my side - can you say that again?"
             history.append({"role": "assistant", "content": answer})
+            logger.info("reply ready customer=%s answer_length=%d", customer_id, len(answer))
             return answer
-        for call in msg["tool_calls"]:
-            name = call["function"]["name"]
+        for call in tool_calls:
+            function = call.get("function") or {}
+            name = function.get("name", "")
             try:
-                args = json.loads(call["function"].get("arguments") or "{}")
-            except json.JSONDecodeError:
+                args = json.loads(function.get("arguments") or "{}")
+                if not isinstance(args, dict):
+                    raise ValueError("tool arguments must be a JSON object")
+            except (json.JSONDecodeError, ValueError) as exc:
+                logger.warning("invalid tool arguments customer=%s tool=%s error=%s raw=%r",
+                               customer_id, name, exc, function.get("arguments"))
                 args = {}
-            result = _run_tool(business_id, customer_id, name, args)
+            try:
+                result = _run_tool(business_id, customer_id, name, args)
+            except Exception:
+                logger.exception("tool failed customer=%s tool=%s args=%r", customer_id, name, args)
+                result = {"ok": False, "error": "The booking tool failed. Ask the customer to try again."}
+            logger.info("tool result customer=%s tool=%s ok=%s error=%s",
+                        customer_id, name, result.get("ok"), result.get("error"))
             if name == "book_appointment" and result.get("ok"):
                 _post_booking.add(conversation_key)
-            messages.append({"role": "tool", "tool_call_id": call["id"],
+            messages.append({"role": "tool", "tool_call_id": call.get("id", ""),
                              "content": json.dumps(result, ensure_ascii=False)})
+    logger.error("tool round limit reached customer=%s", customer_id)
     return "Sorry, something got stuck on my side - can you say that again?"
