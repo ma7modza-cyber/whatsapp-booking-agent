@@ -8,13 +8,16 @@ import os
 
 import requests
 
+import businesses
+
 API_VERSION = "v21.0"
 
 
-def _send_twilio(to, body):
+def _send_twilio(to, body, business_id):
     sid = os.environ.get("TWILIO_ACCOUNT_SID", "")
     token = os.environ.get("TWILIO_AUTH_TOKEN", "")
-    from_number = os.environ.get("TWILIO_WHATSAPP_FROM", "")
+    config = businesses.get_business(business_id)
+    from_number = config.get("twilio_whatsapp_from") or os.environ.get("TWILIO_WHATSAPP_FROM", "")
     if not sid or not token or not from_number:
         raise RuntimeError(
             "TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN / TWILIO_WHATSAPP_FROM are not set in .env"
@@ -31,8 +34,9 @@ def _send_twilio(to, body):
     return resp.json()
 
 
-def _send_meta(to, body):
-    phone_number_id = os.environ.get("META_PHONE_NUMBER_ID", "")
+def _send_meta(to, body, business_id):
+    config = businesses.get_business(business_id)
+    phone_number_id = config.get("meta_phone_number_id") or os.environ.get("META_PHONE_NUMBER_ID", "")
     token = os.environ.get("META_ACCESS_TOKEN", "")
     if not phone_number_id or not token:
         raise RuntimeError("META_PHONE_NUMBER_ID / META_ACCESS_TOKEN are not set in .env")
@@ -47,7 +51,8 @@ def _send_meta(to, body):
     return resp.json()
 
 
-def send_text(to, body):
+def send_text(to, body, business_id=None):
+    business_id = business_id or businesses.DEFAULT_BUSINESS_ID
     if os.environ.get("TWILIO_ACCOUNT_SID"):
-        return _send_twilio(to, body)
-    return _send_meta(to, body)
+        return _send_twilio(to, body, business_id)
+    return _send_meta(to, body, business_id)
