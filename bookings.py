@@ -131,19 +131,24 @@ def is_open(business_id, date_str):
     return _day_bounds(business_id, date_str) is not None
 
 
-def available_slots(business_id, date_str, duration_minutes):
+def available_slots(business_id, date_str, duration_minutes, conn=None):
     bounds = _day_bounds(business_id, date_str)
     if not bounds:
         return []
     config = business_config(business_id)
     open_t, close_t = bounds
     day = datetime.strptime(date_str, "%Y-%m-%d").date()
-    with _conn() as conn:
+    owns_connection = conn is None
+    conn = conn or _conn()
+    try:
         rows = conn.execute(
             "SELECT time, duration_minutes FROM bookings "
             "WHERE business_id = ? AND date = ? AND status = 'confirmed'",
             (business_id, date_str),
         ).fetchall()
+    finally:
+        if owns_connection:
+            conn.close()
     busy = []
     for time_str, duration in rows:
         start = datetime.combine(day, datetime.strptime(time_str, "%H:%M").time())
@@ -173,10 +178,15 @@ def create_booking(business_id, customer_id, first_name, family_name, service_id
     service = get_service(business_id, service_id)
     if not service:
         return {"ok": False, "error": f"Unknown service '{service_id}'. Use get_services to list them."}
-    if time_str not in available_slots(business_id, date_str, service["duration_minutes"]):
-        return {"ok": False, "error": "That time is not available. Offer the customer other slots."}
     display_name = service_display_name(service, language)
     with _conn() as conn:
+        # Lock before checking availability so two simultaneous webhook workers
+        # cannot both claim the same slot.
+        conn.execute("BEGIN IMMEDIATE")
+        if time_str not in available_slots(
+            business_id, date_str, service["duration_minutes"], conn=conn
+        ):
+            return {"ok": False, "error": "That time is not available. Offer the customer other slots."}
         cur = conn.execute(
             """INSERT INTO bookings
                (business_id, customer_id, customer_name, first_name, family_name, service_id, date, time, duration_minutes, service_name, created_at)
