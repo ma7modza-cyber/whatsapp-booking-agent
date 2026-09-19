@@ -263,3 +263,15 @@ def cancel_booking(business_id, customer_id, booking_id):
     display_name = _resolve_display_name(business_id, service_id, stored_name, customer_name)
     return {"ok": True, "booking_id": booking_id, "customer_name": customer_name,
             "service": display_name, "date": date_str, "time": time_str}
+
+
+def clear_bookings(business_id, date_str=None):
+    """Permanently delete one business's bookings, optionally for one date."""
+    query = "DELETE FROM bookings WHERE business_id = ?"
+    params = [business_id]
+    if date_str is not None:
+        query += " AND date = ?"
+        params.append(date_str)
+    with _conn() as conn:
+        cursor = conn.execute(query, params)
+        return cursor.rowcount
