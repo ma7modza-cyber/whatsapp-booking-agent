@@ -23,7 +23,8 @@ Rules:
 - Keep every message short and warm, like a real WhatsApp chat. No formal letters, no bullet-point essays.
 - Customers can: see services and prices, check available times, book, see their bookings, cancel.
 - NEVER invent times. Only offer slots returned by the get_available_slots tool.
-- Booking flow: find out which service -> which day -> offer real available times -> ask for BOTH their first name and family name -> confirm the booking with the tool -> repeat back their full name, service, day, time, price.
+- Never skip the barber choice or choose a barber for the customer. In Hebrew ask: "איזה ספר תרצה? עומר, עלי או יוסף?" (using the configured names returned by get_workers).
+- Booking flow: find out which service -> ask which barber (use get_workers and show all three choices) -> which day -> offer real available times for that barber -> ask for BOTH their first name and family name -> confirm the booking with the tool -> repeat back their full name, service, barber, day, time, price.
 - Never call book_appointment until the customer has provided both a first name and a family name.
 - When you call book_appointment, pass the language of THIS conversation (en, he, or ar) as the 'language' argument, so the booking is saved in the customer's language.
 - When listing bookings, each booking comes with a ready-made 'line' field. Output those lines exactly as they are, one per line - never rewrite, reorder, or translate them.
@@ -40,24 +41,31 @@ TOOLS = [
         "description": "List the salon's services with duration and price.",
         "parameters": {"type": "object", "properties": {}}}},
     {"type": "function", "function": {
+        "name": "get_workers",
+        "description": "List the barbers the customer can choose from in the conversation language.",
+        "parameters": {"type": "object", "properties": {
+            "language": {"type": "string", "enum": ["en", "he", "ar"]}}}}},
+    {"type": "function", "function": {
         "name": "get_available_slots",
         "description": "Get free start times for a service on a date. Returns [] when the salon is closed or fully booked.",
         "parameters": {"type": "object", "properties": {
             "date": {"type": "string", "description": "YYYY-MM-DD"},
-            "service": {"type": "string", "description": "Service id or name"}},
-            "required": ["date", "service"]}}},
+            "service": {"type": "string", "description": "Service id or name"},
+            "worker": {"type": "string", "description": "Barber id or name"}},
+            "required": ["date", "service", "worker"]}}},
     {"type": "function", "function": {
         "name": "book_appointment",
-        "description": "Book an appointment after the customer picked a service, date, time, and gave both their first name and family name.",
+        "description": "Book an appointment after the customer picked a service, barber, date, time, and gave both their first name and family name.",
         "parameters": {"type": "object", "properties": {
             "first_name": {"type": "string", "description": "Customer first/given name"},
             "family_name": {"type": "string", "description": "Customer family/last name"},
             "service": {"type": "string"},
+            "worker": {"type": "string", "description": "Chosen barber id or name"},
             "date": {"type": "string", "description": "YYYY-MM-DD"},
             "time": {"type": "string", "description": "HH:MM, 24h"},
             "language": {"type": "string", "enum": ["en", "he", "ar"],
                          "description": "Language of this conversation - en, he, or ar"}},
-            "required": ["first_name", "family_name", "service", "date", "time"]}}},
+            "required": ["first_name", "family_name", "service", "worker", "date", "time"]}}},
     {"type": "function", "function": {
         "name": "my_bookings",
         "description": "List this customer's upcoming bookings.",
@@ -154,22 +162,27 @@ def _run_tool(business_id, customer_id, name, args):
     normalized_customer_id = businesses.normalize_number(customer_id)
     if name == "get_services":
         return {"services": bookings.list_services(business_id)}
+    if name == "get_workers":
+        return {"workers": bookings.list_workers(business_id, args.get("language"))}
     if name == "get_available_slots":
         service = bookings.get_service(business_id, args.get("service", ""))
         if not service:
             return {"error": "Unknown service. Call get_services first."}
-        return {"date": args["date"], "open": bookings.is_open(business_id, args["date"]),
-                "slots": bookings.available_slots(business_id, args["date"], service["duration_minutes"])}
+        worker = bookings.get_worker(business_id, args.get("worker", ""))
+        if not worker:
+            return {"error": "Unknown barber. Call get_workers first."}
+        return {"date": args["date"], "worker": bookings.worker_display_name(worker), "open": bookings.is_open(business_id, args["date"]),
+                "slots": bookings.available_slots(business_id, args["date"], service["duration_minutes"], worker["id"])}
     if name == "book_appointment":
-        required = ("first_name", "family_name", "service", "date", "time")
+        required = ("first_name", "family_name", "service", "worker", "date", "time")
         missing = [field for field in required if not str(args.get(field, "")).strip()]
         if missing:
             return {"ok": False, "error": "Missing required booking details: " + ", ".join(missing)}
         result = bookings.create_booking(business_id, customer_id, args["first_name"], args["family_name"],
-                                         args["service"], args["date"], args["time"], args.get("language"))
+                                         args["service"], args["worker"], args["date"], args["time"], args.get("language"))
         if result.get("ok"):
             _notify_owner(business_id, "New booking:\n" + bookings.booking_line(
-                result["service"], result["date"], result["time"], result["customer_name"]))
+                result["service"], result["date"], result["time"], result["customer_name"], result["worker"]))
         return result
     if name == "my_bookings":
         return {"bookings": bookings.list_customer_bookings(business_id, customer_id)}
@@ -209,7 +222,7 @@ def _run_tool(business_id, customer_id, name, args):
         result = bookings.cancel_booking(business_id, customer_id, int(args["booking_id"]))
         if result.get("ok"):
             _notify_owner(business_id, "Booking cancelled:\n" + bookings.booking_line(
-                result["service"], result["date"], result["time"], result["customer_name"]))
+                result["service"], result["date"], result["time"], result["customer_name"], result["worker"]))
         return result
     return {"error": f"Unknown tool {name}"}
 
