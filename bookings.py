@@ -274,13 +274,21 @@ def list_customer_bookings(business_id, customer_id):
     return result
 
 
-def list_bookings(business_id, date_str=None):
+def list_bookings(business_id, date_str=None, start_date=None, end_date=None):
+    """List confirmed bookings, optionally for one day or an inclusive date range."""
+    if date_str and (start_date or end_date):
+        raise ValueError("date_str cannot be combined with a date range")
+    if bool(start_date) != bool(end_date):
+        raise ValueError("start_date and end_date must be provided together")
     query = """SELECT id, customer_name, first_name, family_name, service_id, date, time, service_name, worker_name FROM bookings
                WHERE business_id = ? AND status = 'confirmed'"""
     params = [business_id]
     if date_str:
         query += " AND date = ?"
         params.append(date_str)
+    elif start_date and end_date:
+        query += " AND date BETWEEN ? AND ?"
+        params.extend((start_date, end_date))
     query += " ORDER BY date, time"
     with _conn() as conn:
         rows = conn.execute(query, params).fetchall()

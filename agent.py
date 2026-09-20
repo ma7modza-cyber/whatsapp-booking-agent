@@ -3,7 +3,7 @@ import json
 import logging
 import os
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import requests
 import bookings
@@ -86,7 +86,11 @@ OWNER_TOOLS = [
         "parameters": {"type": "object", "properties": {}}}},
     {"type": "function", "function": {
         "name": "owner_all_bookings",
-        "description": "For the salon owner only: list all confirmed bookings, with customer names, services, dates, and times.",
+        "description": "For the salon owner only: list all confirmed bookings, with customer names, services, dates, and times. Do not use this for a weekly request.",
+        "parameters": {"type": "object", "properties": {}}}},
+    {"type": "function", "function": {
+        "name": "owner_bookings_this_week",
+        "description": "For the salon owner only: list confirmed bookings for the current salon week, Sunday through Saturday. Always use this for this-week or weekly booking requests in Hebrew, Arabic, or English.",
         "parameters": {"type": "object", "properties": {}}}},
     {"type": "function", "function": {
         "name": "owner_bookings_for_date",
@@ -205,7 +209,7 @@ def _run_tool(business_id, customer_id, name, args):
     if name == "my_bookings":
         return {"bookings": bookings.list_customer_bookings(business_id, customer_id)}
     owner_tool_names = {
-        "owner_bookings_today", "owner_all_bookings", "owner_bookings_for_date",
+        "owner_bookings_today", "owner_all_bookings", "owner_bookings_this_week", "owner_bookings_for_date",
         "owner_clear_bookings_for_date", "owner_clear_all_bookings",
         "owner_cancel_booking",
     }
@@ -218,6 +222,16 @@ def _run_tool(business_id, customer_id, name, args):
         return {"date": today, "bookings": bookings.list_bookings(business_id, today)}
     if name == "owner_all_bookings":
         return {"bookings": bookings.list_bookings(business_id)}
+    if name == "owner_bookings_this_week":
+        today = datetime.now(bookings.business_timezone(business_id)).date()
+        # Python Monday=0; local salon convention is Sunday=0.
+        days_since_sunday = (today.weekday() + 1) % 7
+        week_start = today - timedelta(days=days_since_sunday)
+        week_end = week_start + timedelta(days=6)
+        start_str, end_str = week_start.isoformat(), week_end.isoformat()
+        return {"start_date": start_str, "end_date": end_str,
+                "bookings": bookings.list_bookings(
+                    business_id, start_date=start_str, end_date=end_str)}
     if name in ("owner_bookings_for_date", "owner_clear_bookings_for_date"):
         date_str = str(args.get("date", "")).strip()
         try:
@@ -298,8 +312,12 @@ def _reply_unlocked(customer_id, text, business_id=None):
     is_owner = normalized_customer_id in owner_numbers
     if is_owner:
         system += ("\n- This sender is the salon owner. They may ask for today's bookings, "
-                   "all bookings, or bookings for a specific date; use the matching owner booking "
-                   "tool and include customer names. Resolve relative dates such as tomorrow from "
+                   "this week's bookings, all bookings, or bookings for a specific date; use the matching "
+                   "owner booking tool and include customer names. For any request for this week or the "
+                   "current week in Hebrew, Arabic, or English, always call owner_bookings_this_week. "
+                   "Output only the booking line fields returned by that tool, exactly as provided, and "
+                   "never mention bookings outside its Sunday-through-Saturday range. "
+                   "Resolve relative dates such as tomorrow from "
                    "the salon date above, and pass YYYY-MM-DD to owner_bookings_for_date. "
                    "If they ask to clear bookings for a specific day, call "
                    "owner_clear_bookings_for_date. Only call owner_clear_all_bookings when "
