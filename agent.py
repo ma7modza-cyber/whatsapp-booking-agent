@@ -95,6 +95,12 @@ OWNER_TOOLS = [
             "date": {"type": "string", "description": "YYYY-MM-DD"}},
             "required": ["date"]}}},
     {"type": "function", "function": {
+        "name": "owner_cancel_booking",
+        "description": "For the salon owner only: cancel one specific booking by booking_id. Take the booking_id from the results of owner_bookings_today, owner_all_bookings, or owner_bookings_for_date - never ask for it in chat.",
+        "parameters": {"type": "object", "properties": {
+            "booking_id": {"type": "integer"}},
+            "required": ["booking_id"]}}},
+    {"type": "function", "function": {
         "name": "owner_clear_bookings_for_date",
         "description": "For the salon owner only: permanently delete every booking for one specific date when the owner asks to clear that day's bookings. Returns the number cleared.",
         "parameters": {"type": "object", "properties": {
@@ -201,6 +207,7 @@ def _run_tool(business_id, customer_id, name, args):
     owner_tool_names = {
         "owner_bookings_today", "owner_all_bookings", "owner_bookings_for_date",
         "owner_clear_bookings_for_date", "owner_clear_all_bookings",
+        "owner_cancel_booking",
     }
     if name in owner_tool_names and normalized_customer_id not in owner_numbers:
         logger.warning("rejected owner tool business=%s customer=%s tool=%s",
@@ -230,6 +237,8 @@ def _run_tool(business_id, customer_id, name, args):
                     business_id, customer_id, cleared)
         return {"ok": True, "cleared_count": cleared,
                 "message": f"Cleared {cleared} bookings"}
+    if name == "owner_cancel_booking":
+        return bookings.cancel_booking_by_id(business_id, int(args["booking_id"]))
     if name == "cancel_booking":
         result = bookings.cancel_booking(business_id, customer_id, int(args["booking_id"]))
         if result.get("ok"):
@@ -294,7 +303,10 @@ def _reply_unlocked(customer_id, text, business_id=None):
                    "the salon date above, and pass YYYY-MM-DD to owner_bookings_for_date. "
                    "If they ask to clear bookings for a specific day, call "
                    "owner_clear_bookings_for_date. Only call owner_clear_all_bookings when "
-                   "they explicitly ask to clear every booking. Reply with the tool's exact message field.")
+                   "they explicitly ask to clear every booking. Reply with the tool's exact message field. "
+                   "To cancel one specific booking, find it with the owner booking tools, take its "
+                   "booking_id from the result, and call owner_cancel_booking with it. NEVER ask the "
+                   "owner for a booking ID. Confirm what was cancelled: name, service, day, time.")
     tools = TOOLS + OWNER_TOOLS if is_owner else TOOLS
     messages = [{"role": "system", "content": system}] + history_snapshot
 

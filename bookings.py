@@ -297,20 +297,34 @@ def list_bookings(business_id, date_str=None):
     return result
 
 
-def cancel_booking(business_id, customer_id, booking_id):
+def _cancel_booking_row(business_id, booking_id, customer_id=None):
+    """Cancel one confirmed booking. customer_id set = customer-side (own bookings
+    only); customer_id None = owner-side (any booking of the business)."""
+    query = """SELECT customer_name, service_id, date, time, service_name, worker_name FROM bookings
+               WHERE id = ? AND business_id = ? AND status = 'confirmed'"""
+    params = [booking_id, business_id]
+    if customer_id is not None:
+        query += " AND customer_id = ?"
+        params.append(customer_id)
     with _conn() as conn:
-        row = conn.execute(
-            """SELECT customer_name, service_id, date, time, service_name, worker_name FROM bookings
-               WHERE id = ? AND business_id = ? AND customer_id = ? AND status = 'confirmed'""",
-            (booking_id, business_id, customer_id),
-        ).fetchone()
+        row = conn.execute(query, params).fetchone()
         if not row:
-            return {"ok": False, "error": "No such booking for this customer."}
+            return {"ok": False, "error": "No such booking." if customer_id is None
+                    else "No such booking for this customer."}
         conn.execute("UPDATE bookings SET status = 'cancelled' WHERE id = ?", (booking_id,))
     customer_name, service_id, date_str, time_str, stored_name, worker_name = row
     display_name = _resolve_display_name(business_id, service_id, stored_name, customer_name)
     return {"ok": True, "booking_id": booking_id, "customer_name": customer_name,
             "service": display_name, "worker": worker_name, "date": date_str, "time": time_str}
+
+
+def cancel_booking(business_id, customer_id, booking_id):
+    return _cancel_booking_row(business_id, booking_id, customer_id=customer_id)
+
+
+def cancel_booking_by_id(business_id, booking_id):
+    """Owner-side cancel: any booking of the business, by id."""
+    return _cancel_booking_row(business_id, booking_id)
 
 
 def clear_bookings(business_id, date_str=None):
