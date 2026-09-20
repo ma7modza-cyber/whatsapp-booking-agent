@@ -21,6 +21,11 @@
         {"id": "beard", "name": "Beard trim", "duration_minutes": 20, "price_ils": 40, "names": {"en": "Beard trim", "he": "עיצוב זקן", "ar": "تهذيب اللحية"}},
         {"id": "haircut_beard", "name": "Haircut + beard", "duration_minutes": 45, "price_ils": 90, "names": {"en": "Haircut + beard", "he": "תספורת + עיצוב זקן", "ar": "حلاقة شعر + لحية"}},
         {"id": "kids", "name": "Kids haircut", "duration_minutes": 25, "price_ils": 50, "names": {"en": "Kids haircut", "he": "תספורת ילדים", "ar": "حلاقة أطفال"}}
+      ],
+      "workers": [
+        {"id": "omar", "name": "Omar", "names": {"en": "Omar", "he": "עומר", "ar": "عمر"}},
+        {"id": "ali", "name": "Ali", "names": {"en": "Ali", "he": "עלי", "ar": "علي"}},
+        {"id": "yusuf", "name": "Yusuf", "names": {"en": "Yusuf", "he": "יוסף", "ar": "يوسف"}}
       ]
     }
   }
