@@ -138,7 +138,7 @@ WhatsApp any message to the sandbox number - the agent answers. You're live.
 
 ## Make it yours
 
-Everything about every business is in `businesses.json`: its name, inbound WhatsApp number(s), owner number(s), opening hours, services, durations, and prices. Add another entry under `businesses`, give it a unique ID, then restart the server. No code changes are needed.
+Everything about every business is in `businesses.json`: its name, inbound WhatsApp number(s), owner number(s), opening hours, workers, services, durations, and prices. Each worker has a stable `id`, a default `name`, and optional localized names under `names` (`en`, `he`, `ar`). Edit those names and restart the server to rename the barbers. Add another entry under `businesses`, give it a unique ID, then restart the server. No code changes are needed.
 
 The original sandbox remains the default `barber-shop` tenant and still routes `whatsapp:+14155238886` to the same salon. Existing rows in `bookings.db` are automatically assigned to this default tenant the first time the updated app runs.
 
