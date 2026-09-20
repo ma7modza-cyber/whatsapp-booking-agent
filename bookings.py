@@ -15,6 +15,7 @@ DB_PATH = os.environ.get("DB_PATH", "bookings.db")
 # the same visual order - bullet, name, service, date, time - in any language.
 _LRM = "\u200e"
 _FSI = "\u2068"
+_LRI = "\u2066"
 _PDI = "\u2069"
 
 
@@ -22,15 +23,20 @@ def _bidi_field(text):
     return f"{_FSI}{text}{_PDI}"
 
 
-def _guess_language(text):
-    """Best-effort language guess from script, for bookings saved before
-    service_name was stored."""
+def guess_language(text):
+    """Best-effort language guess from script: 'he', 'ar', or None."""
     for ch in text or "":
         if "\u0590" <= ch <= "\u05ff":
             return "he"
         if "\u0600" <= ch <= "\u06ff":
             return "ar"
     return None
+
+
+def _guess_language(text):
+    """Best-effort language guess from script, for bookings saved before
+    service_name was stored."""
+    return guess_language(text)
 
 
 def service_display_name(service, language=None):
@@ -50,7 +56,10 @@ def booking_line(service_name, date_str, time_str, customer_name=None, worker_na
     parts.append(_bidi_field(service_name))
     if worker_name:
         parts.append(_bidi_field(worker_name))
-    return f"{_LRM}\u2022 " + " - ".join(parts) + f" - {date_str} {time_str}"
+    # Isolate the date-time as its own LTR field: appended raw it picks up the
+    # paragraph direction of an RTL name and renders flipped (20-09-2026).
+    parts.append(f"{_LRI}{date_str} {time_str}{_PDI}")
+    return f"{_LRM}\u2022 " + " - ".join(parts)
 
 
 def business_config(business_id):

@@ -1,6 +1,7 @@
 """Flask webhook for Twilio and Meta WhatsApp messages."""
 import logging
 import os
+import threading
 from xml.sax.saxutils import escape as xml_escape
 
 from dotenv import load_dotenv
@@ -65,6 +66,16 @@ def _handle_twilio():
     if not text:
         return _twiml()
     logger.info("Twilio inbound sender=%s business=%s text_length=%d", sender, business_id, len(text))
+    # Ack immediately with empty TwiML. Twilio discards the webhook response
+    # after ~15s, and a multi-round booking turn can take longer - the reply
+    # would be generated but never delivered. Send it over the REST API on a
+    # background thread instead, the same pattern as the owner notifications.
+    threading.Thread(target=_reply_via_api, args=(sender, text, business_id), daemon=True).start()
+    return _twiml()
+
+
+def _reply_via_api(sender, text, business_id):
+    """Generate the receptionist reply and deliver it via the REST API."""
     try:
         answer = agent.reply(sender, text, business_id)
     except Exception:
@@ -73,8 +84,12 @@ def _handle_twilio():
     if not isinstance(answer, str) or not answer.strip():
         logger.error("empty Twilio reply sender=%s business=%s", sender, business_id)
         answer = _ERROR_REPLY
+    try:
+        whatsapp.send_text(sender, answer, business_id)
+    except Exception:
+        logger.exception("failed to deliver Twilio reply sender=%s business=%s", sender, business_id)
+        return
     logger.info("Twilio outbound sender=%s business=%s answer_length=%d", sender, business_id, len(answer))
-    return _twiml(answer)
 
 
 def _handle_meta():

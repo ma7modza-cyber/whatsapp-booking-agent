@@ -113,6 +113,18 @@ _MAX_HISTORY_MESSAGES = 20
 _REPLY_LOCKS = tuple(threading.RLock() for _ in range(64))
 
 
+_OWNER_PING_LABELS = {
+    "new": {"en": "New booking:", "he": "תור חדש:", "ar": "حجز جديد:"},
+    "cancel": {"en": "Booking cancelled:", "he": "התור בוטל:", "ar": "تم إلغاء الحجز:"},
+}
+
+
+def _owner_ping(kind, language, line):
+    """Owner ping labelled in the language of the booking conversation."""
+    labels = _OWNER_PING_LABELS[kind]
+    return (labels.get(language) or labels["en"]) + "\n" + line
+
+
 def _notify_owner(business_id, text):
     """WhatsApp the tenant's owner(s) about a booking event.
 
@@ -181,8 +193,8 @@ def _run_tool(business_id, customer_id, name, args):
         result = bookings.create_booking(business_id, customer_id, args["first_name"], args["family_name"],
                                          args["service"], args["worker"], args["date"], args["time"], args.get("language"))
         if result.get("ok"):
-            _notify_owner(business_id, "New booking:\n" + bookings.booking_line(
-                result["service"], result["date"], result["time"], result["customer_name"], result["worker"]))
+            _notify_owner(business_id, _owner_ping("new", args.get("language"), bookings.booking_line(
+                result["service"], result["date"], result["time"], result["customer_name"], result["worker"])))
         return result
     if name == "my_bookings":
         return {"bookings": bookings.list_customer_bookings(business_id, customer_id)}
@@ -221,8 +233,8 @@ def _run_tool(business_id, customer_id, name, args):
     if name == "cancel_booking":
         result = bookings.cancel_booking(business_id, customer_id, int(args["booking_id"]))
         if result.get("ok"):
-            _notify_owner(business_id, "Booking cancelled:\n" + bookings.booking_line(
-                result["service"], result["date"], result["time"], result["customer_name"], result["worker"]))
+            _notify_owner(business_id, _owner_ping("cancel", bookings.guess_language(result["service"]), bookings.booking_line(
+                result["service"], result["date"], result["time"], result["customer_name"], result["worker"])))
         return result
     return {"error": f"Unknown tool {name}"}
 
