@@ -41,13 +41,15 @@ def service_display_name(service, language=None):
     return service["name"]
 
 
-def booking_line(service_name, date_str, time_str, customer_name=None):
+def booking_line(service_name, date_str, time_str, customer_name=None, worker_name=None):
     """One bidi-safe display line: '* name - service - date time' (name only
     on owner lists)."""
     parts = []
     if customer_name:
         parts.append(_bidi_field(customer_name))
     parts.append(_bidi_field(service_name))
+    if worker_name:
+        parts.append(_bidi_field(worker_name))
     return f"{_LRM}\u2022 " + " - ".join(parts) + f" - {date_str} {time_str}"
 
 
@@ -74,6 +76,8 @@ def _conn():
             time TEXT NOT NULL,
             duration_minutes INTEGER NOT NULL,
             service_name TEXT,
+            worker_id TEXT,
+            worker_name TEXT,
             status TEXT NOT NULL DEFAULT 'confirmed',
             created_at TEXT NOT NULL
         )"""
@@ -91,6 +95,10 @@ def _conn():
         conn.execute("ALTER TABLE bookings ADD COLUMN first_name TEXT")
     if "family_name" not in columns:
         conn.execute("ALTER TABLE bookings ADD COLUMN family_name TEXT")
+    if "worker_id" not in columns:
+        conn.execute("ALTER TABLE bookings ADD COLUMN worker_id TEXT")
+    if "worker_name" not in columns:
+        conn.execute("ALTER TABLE bookings ADD COLUMN worker_name TEXT")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_bookings_business_date "
         "ON bookings (business_id, date, status)"
@@ -112,6 +120,27 @@ def get_service(business_id, service_id_or_name):
     return None
 
 
+def get_worker(business_id, worker_id_or_name):
+    needle = worker_id_or_name.strip().casefold()
+    for worker in business_config(business_id).get("workers", []):
+        candidates = [worker["id"], worker["name"], *(worker.get("names") or {}).values()]
+        if needle in {candidate.casefold() for candidate in candidates}:
+            return worker
+    return None
+
+
+def worker_display_name(worker, language=None):
+    names = worker.get("names") or {}
+    return names.get(language) or worker["name"]
+
+
+def list_workers(business_id, language=None):
+    return [
+        {"id": worker["id"], "name": worker_display_name(worker, language)}
+        for worker in business_config(business_id).get("workers", [])
+    ]
+
+
 def list_services(business_id):
     return [
         {"name": s["name"], "duration_minutes": s["duration_minutes"], "price_ils": s["price_ils"]}
@@ -131,11 +160,15 @@ def is_open(business_id, date_str):
     return _day_bounds(business_id, date_str) is not None
 
 
-def available_slots(business_id, date_str, duration_minutes, conn=None):
+def available_slots(business_id, date_str, duration_minutes, worker_id, conn=None):
     bounds = _day_bounds(business_id, date_str)
     if not bounds:
         return []
     config = business_config(business_id)
+    worker = get_worker(business_id, worker_id)
+    if not worker:
+        return []
+    worker_id = worker["id"]
     open_t, close_t = bounds
     day = datetime.strptime(date_str, "%Y-%m-%d").date()
     owns_connection = conn is None
@@ -143,8 +176,9 @@ def available_slots(business_id, date_str, duration_minutes, conn=None):
     try:
         rows = conn.execute(
             "SELECT time, duration_minutes FROM bookings "
-            "WHERE business_id = ? AND date = ? AND status = 'confirmed'",
-            (business_id, date_str),
+            "WHERE business_id = ? AND date = ? AND status = 'confirmed' "
+            "AND (worker_id = ? OR worker_id IS NULL OR worker_id = '')",
+            (business_id, date_str, worker_id),
         ).fetchall()
     finally:
         if owns_connection:
@@ -169,7 +203,7 @@ def available_slots(business_id, date_str, duration_minutes, conn=None):
     return slots
 
 
-def create_booking(business_id, customer_id, first_name, family_name, service_id, date_str, time_str, language=None):
+def create_booking(business_id, customer_id, first_name, family_name, service_id, worker_id, date_str, time_str, language=None):
     first_name = first_name.strip()
     family_name = family_name.strip()
     if not first_name or not family_name:
@@ -179,24 +213,29 @@ def create_booking(business_id, customer_id, first_name, family_name, service_id
     if not service:
         return {"ok": False, "error": f"Unknown service '{service_id}'. Use get_services to list them."}
     display_name = service_display_name(service, language)
+    worker = get_worker(business_id, worker_id)
+    if not worker:
+        return {"ok": False, "error": f"Unknown worker '{worker_id}'. Use get_workers to list them."}
+    worker_name = worker_display_name(worker, language)
     with _conn() as conn:
         # Lock before checking availability so two simultaneous webhook workers
         # cannot both claim the same slot.
         conn.execute("BEGIN IMMEDIATE")
         if time_str not in available_slots(
-            business_id, date_str, service["duration_minutes"], conn=conn
+            business_id, date_str, service["duration_minutes"], worker["id"], conn=conn
         ):
             return {"ok": False, "error": "That time is not available. Offer the customer other slots."}
         cur = conn.execute(
             """INSERT INTO bookings
-               (business_id, customer_id, customer_name, first_name, family_name, service_id, date, time, duration_minutes, service_name, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (business_id, customer_id, customer_name, first_name, family_name, service["id"], date_str, time_str,
+               (business_id, customer_id, customer_name, first_name, family_name, service_id, worker_id, worker_name, date, time, duration_minutes, service_name, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (business_id, customer_id, customer_name, first_name, family_name, service["id"], worker["id"], worker_name, date_str, time_str,
              service["duration_minutes"], display_name,
              datetime.now(business_timezone(business_id)).isoformat(timespec="seconds")),
         )
     return {"ok": True, "booking_id": cur.lastrowid, "customer_name": customer_name,
             "first_name": first_name, "family_name": family_name, "service": display_name,
+            "worker": worker_name, "worker_id": worker["id"],
             "date": date_str, "time": time_str, "price_ils": service["price_ils"]}
 
 
@@ -212,22 +251,22 @@ def _resolve_display_name(business_id, service_id, stored_name, customer_name=No
 def list_customer_bookings(business_id, customer_id):
     with _conn() as conn:
         rows = conn.execute(
-            """SELECT id, service_id, date, time, service_name, customer_name FROM bookings
+            """SELECT id, service_id, date, time, service_name, customer_name, worker_name FROM bookings
                WHERE business_id = ? AND customer_id = ? AND status = 'confirmed'
                ORDER BY date, time""",
             (business_id, customer_id),
         ).fetchall()
     result = []
-    for booking_id, service_id, date_str, time_str, stored_name, customer_name in rows:
+    for booking_id, service_id, date_str, time_str, stored_name, customer_name, worker_name in rows:
         display_name = _resolve_display_name(business_id, service_id, stored_name, customer_name)
         result.append({"booking_id": booking_id, "service": display_name,
-                       "date": date_str, "time": time_str,
-                       "line": booking_line(display_name, date_str, time_str)})
+                       "worker": worker_name, "date": date_str, "time": time_str,
+                       "line": booking_line(display_name, date_str, time_str, worker_name=worker_name)})
     return result
 
 
 def list_bookings(business_id, date_str=None):
-    query = """SELECT id, customer_name, first_name, family_name, service_id, date, time, service_name FROM bookings
+    query = """SELECT id, customer_name, first_name, family_name, service_id, date, time, service_name, worker_name FROM bookings
                WHERE business_id = ? AND status = 'confirmed'"""
     params = [business_id]
     if date_str:
@@ -237,32 +276,32 @@ def list_bookings(business_id, date_str=None):
     with _conn() as conn:
         rows = conn.execute(query, params).fetchall()
     result = []
-    for booking_id, customer_name, first_name, family_name, service_id, booking_date, time_str, stored_name in rows:
+    for booking_id, customer_name, first_name, family_name, service_id, booking_date, time_str, stored_name, worker_name in rows:
         display_name = _resolve_display_name(business_id, service_id, stored_name, customer_name)
         if not first_name:
             first_name, _, inferred_family_name = customer_name.partition(" ")
             family_name = family_name or inferred_family_name
         result.append({"booking_id": booking_id, "customer_name": customer_name,
                        "first_name": first_name, "family_name": family_name, "service": display_name,
-                       "date": booking_date, "time": time_str,
-                       "line": booking_line(display_name, booking_date, time_str, customer_name)})
+                       "worker": worker_name, "date": booking_date, "time": time_str,
+                       "line": booking_line(display_name, booking_date, time_str, customer_name, worker_name)})
     return result
 
 
 def cancel_booking(business_id, customer_id, booking_id):
     with _conn() as conn:
         row = conn.execute(
-            """SELECT customer_name, service_id, date, time, service_name FROM bookings
+            """SELECT customer_name, service_id, date, time, service_name, worker_name FROM bookings
                WHERE id = ? AND business_id = ? AND customer_id = ? AND status = 'confirmed'""",
             (booking_id, business_id, customer_id),
         ).fetchone()
         if not row:
             return {"ok": False, "error": "No such booking for this customer."}
         conn.execute("UPDATE bookings SET status = 'cancelled' WHERE id = ?", (booking_id,))
-    customer_name, service_id, date_str, time_str, stored_name = row
+    customer_name, service_id, date_str, time_str, stored_name, worker_name = row
     display_name = _resolve_display_name(business_id, service_id, stored_name, customer_name)
     return {"ok": True, "booking_id": booking_id, "customer_name": customer_name,
-            "service": display_name, "date": date_str, "time": time_str}
+            "service": display_name, "worker": worker_name, "date": date_str, "time": time_str}
 
 
 def clear_bookings(business_id, date_str=None):
