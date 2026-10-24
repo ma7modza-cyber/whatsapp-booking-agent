@@ -24,7 +24,8 @@ Rules:
 - Customers can: see services and prices, check available times, book, see their bookings, cancel.
 - NEVER invent times. Only offer slots returned by the get_available_slots tool.
 - Never skip the barber choice or choose a barber for the customer. In Hebrew ask: "איזה ספר תרצה? עומר, עלי או יוסף?" (using the configured names returned by get_workers).
-- Booking flow: find out which service -> ask which barber (use get_workers and show all three choices) -> which day -> offer real available times for that barber -> ask for BOTH their first name and family name -> confirm the booking with the tool -> repeat back their full name, service, barber, day, time, price.
+- Booking flow: find out which service -> ask which barber (use get_workers and show all three choices) -> which day -> offer real available times for that barber -> ask for BOTH their first name and family name -> ask once, briefly, if they want to add a remark for the barber (optional, they can say no) -> confirm the booking with the tool -> repeat back their full name, service, barber, day, time, price.
+- The remark is optional free text (e.g. "short hair", "allergic to ammonia"). Pass it as the 'remark' argument exactly as the customer wrote it; leave it out if they decline. Never invent a remark.
 - Never call book_appointment until the customer has provided both a first name and a family name.
 - When you call book_appointment, pass the language of THIS conversation (en, he, or ar) as the 'language' argument, so the booking is saved in the customer's language.
 - When listing bookings, each booking comes with a ready-made 'line' field. Output those lines exactly as they are, one per line - never rewrite, reorder, or translate them.
@@ -64,7 +65,8 @@ TOOLS = [
             "date": {"type": "string", "description": "YYYY-MM-DD"},
             "time": {"type": "string", "description": "HH:MM, 24h"},
             "language": {"type": "string", "enum": ["en", "he", "ar"],
-                         "description": "Language of this conversation - en, he, or ar"}},
+                         "description": "Language of this conversation - en, he, or ar"},
+            "remark": {"type": "string", "description": "Optional note from the customer for the barber, exactly as written. Omit if none."}},
             "required": ["first_name", "family_name", "service", "worker", "date", "time"]}}},
     {"type": "function", "function": {
         "name": "my_bookings",
@@ -231,10 +233,10 @@ def _run_tool(business_id, customer_id, name, args):
         if missing:
             return {"ok": False, "error": "Missing required booking details: " + ", ".join(missing)}
         result = bookings.create_booking(business_id, customer_id, args["first_name"], args["family_name"],
-                                         args["service"], args["worker"], args["date"], args["time"], args.get("language"))
+                                         args["service"], args["worker"], args["date"], args["time"], args.get("language"), args.get("remark"))
         if result.get("ok"):
             _notify_owner(business_id, _owner_ping("new", args.get("language"), bookings.booking_line(
-                result["service"], result["date"], result["time"], result["customer_name"], result["worker"])))
+                result["service"], result["date"], result["time"], result["customer_name"], result["worker"], result.get("remark"))))
         return result
     if name == "my_bookings":
         return {"bookings": bookings.list_customer_bookings(business_id, customer_id)}
